@@ -1,0 +1,6 @@
+{
+  "name": "PARKOUR WORLD 3D",
+  "description": "Jogo de parkour 3D completo com 8 mundos únicos, 40 fases, 15 skins desbloqueáveis, economia de moedas, checkpoints e controles personalizáveis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
