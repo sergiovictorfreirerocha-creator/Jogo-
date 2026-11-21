@@ -103,13 +103,26 @@ export interface PlatformDef {
   respawnTime?: number;
   // Bounce pad force
   bounceForce?: number;
-  // Gate bridge linked switch id
+  // Gate / temporary bridge parameters
   switchId?: string;
+  bridgeGroupId?: string;
+  timedDuration?: number;
+  cooldownDuration?: number;
+  autoTrigger?: boolean;
+  triggerPos?: { x: number; y: number; z: number };
   // Visual accent override
   isCheckpointBase?: boolean;
 }
 
-export type ObstacleKind = 'rotator' | 'laser_bar' | 'pendulum' | 'crouch_beam' | 'wall';
+export type ObstacleKind =
+  | 'rotator'
+  | 'laser_bar'
+  | 'pendulum'
+  | 'crouch_beam'
+  | 'wall'
+  | 'moving_block'
+  | 'moving_wall'
+  | 'crusher';
 
 export interface ObstacleDef {
   id: string;
@@ -123,6 +136,7 @@ export interface ObstacleDef {
   speed?: number;
   phase?: number;
   range?: number;
+  axis?: 'x' | 'z';
   lethal?: boolean;
 }
 
@@ -168,6 +182,8 @@ export interface LevelDef {
   coins: CoinDef[];
   checkpoints: CheckpointDef[];
   switches: InteractSwitchDef[];
+  seed?: number;
+  waypoints?: Array<{ x: number; y: number; z: number }>;
 }
 
 export interface WorldDef {
@@ -238,6 +254,12 @@ export interface HudSnapshot {
   nearbyPrompt: string | null;
   toastMessage: string | null;
   jumpsRemaining: number;
+  isEliminated?: boolean;
+  eliminationTimer?: number;
+  eliminationReason?: string | null;
+  activeBridgeTimer?: number | null;
+  activeBridgeMax?: number;
+  activeBridgeWarning?: boolean;
 }
 
 export interface LevelCompletionResult {

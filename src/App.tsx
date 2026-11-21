@@ -13,10 +13,12 @@ import {
   applyLevelCompletion,
   loadSaveData,
   persistSaveData,
+  resetSaveData,
 } from './storage/saveSystem';
 import { getLevelById, getNextLevelInWorld, LEVELS } from './data/levels';
 import { getWorldById } from './data/worlds';
 import { ParkourEngine } from './engine/ParkourEngine';
+import { generateProceduralLevel } from './engine/proceduralGenerator';
 import { soundEngine } from './audio/soundEngine';
 import { MainMenu } from './components/MainMenu';
 import { WorldSelectModal } from './components/WorldSelectModal';
@@ -42,6 +44,12 @@ const INITIAL_HUD: HudSnapshot = {
   nearbyPrompt: null,
   toastMessage: null,
   jumpsRemaining: 2,
+  isEliminated: false,
+  eliminationTimer: 0,
+  eliminationReason: null,
+  activeBridgeTimer: null,
+  activeBridgeMax: 6.0,
+  activeBridgeWarning: false,
 };
 
 export default function App() {
@@ -87,6 +95,19 @@ export default function App() {
     setSaveData((prev) => updater(prev));
   }, []);
 
+  const startLevel = useCallback((baseOrCurrentLevel: LevelDef) => {
+    const baseTemplate = getLevelById(baseOrCurrentLevel.id) || baseOrCurrentLevel;
+    const proceduralLevel = generateProceduralLevel(baseTemplate);
+    activeLevelRef.current = proceduralLevel;
+    setActiveLevel(proceduralLevel);
+    setSelectedWorldId(proceduralLevel.worldId);
+    setVictoryResult(null);
+    setIsPaused(false);
+    setPauseSettingsOpen(false);
+    setScreen('playing');
+    engineRef.current?.loadLevel(proceduralLevel);
+  }, []);
+
   // Initialize Three.js ParkourEngine once on mount
   useEffect(() => {
     const mount = canvasMountRef.current;
@@ -118,6 +139,11 @@ export default function App() {
           return next;
         });
       },
+      onRestartRequest: () => {
+        if (screenRef.current !== 'playing') return;
+        const base = getLevelById(activeLevelRef.current.id) || activeLevelRef.current;
+        startLevel(base);
+      },
       onCameraDistanceChange: (mode: CameraDistanceMode) => {
         setSaveData((prev) => ({
           ...prev,
@@ -146,17 +172,7 @@ export default function App() {
       engine.dispose();
       engineRef.current = null;
     };
-  }, []);
-
-  const startLevel = useCallback((level: LevelDef) => {
-    setActiveLevel(level);
-    setSelectedWorldId(level.worldId);
-    setVictoryResult(null);
-    setIsPaused(false);
-    setPauseSettingsOpen(false);
-    setScreen('playing');
-    engineRef.current?.loadLevel(level);
-  }, []);
+  }, [startLevel]);
 
   const handlePlayContinue = useCallback(() => {
     // Find latest unlocked uncompleted level, or fallback to latest unlocked
@@ -190,22 +206,6 @@ export default function App() {
     setScreen('menu');
     engineRef.current?.enterShowcase(selectedWorldId);
   }, [selectedWorldId]);
-
-  const handleUnlockWorldWithCoins = useCallback(
-    (worldId: WorldId, cost: number) => {
-      updateSave((prev) => {
-        if (prev.coins < cost || prev.unlockedWorlds.includes(worldId)) return prev;
-        soundEngine.playPurchase();
-        return {
-          ...prev,
-          coins: prev.coins - cost,
-          unlockedWorlds: [...prev.unlockedWorlds, worldId],
-          unlockedLevels: Array.from(new Set([...prev.unlockedLevels, `${worldId}-1`])),
-        };
-      });
-    },
-    [updateSave]
-  );
 
   const handleBuySkin = useCallback(
     (skin: SkinDef) => {
@@ -248,6 +248,53 @@ export default function App() {
     });
   }, []);
 
+  const handleResetGame = useCallback(() => {
+    soundEngine.stopMusic();
+    const freshSave = resetSaveData();
+    saveRef.current = freshSave;
+    setSaveData(freshSave);
+    setSelectedWorldId('urban');
+    activeLevelRef.current = LEVELS[0];
+    setActiveLevel(LEVELS[0]);
+    setHud(INITIAL_HUD);
+    setVictoryResult(null);
+    setIsPaused(false);
+    setPauseSettingsOpen(false);
+    setIsMuted(false);
+    soundEngine.setVolumes(freshSave.settings.musicVolume, freshSave.settings.sfxVolume);
+    setScreen('menu');
+    engineRef.current?.updateSettings(freshSave);
+    engineRef.current?.enterShowcase('urban');
+  }, []);
+
+  const handleVirtualMove = useCallback((x: number, y: number) => {
+    engineRef.current?.setVirtualMove(x, y);
+  }, []);
+
+  const handleVirtualSprint = useCallback((active: boolean) => {
+    engineRef.current?.setVirtualFlags({ sprint: active });
+  }, []);
+
+  const handleVirtualCrouch = useCallback((active: boolean) => {
+    engineRef.current?.setVirtualFlags({ crouch: active });
+  }, []);
+
+  const handleVirtualJump = useCallback(() => {
+    engineRef.current?.triggerVirtualJump();
+  }, []);
+
+  const handleVirtualInteract = useCallback(() => {
+    engineRef.current?.triggerVirtualInteract();
+  }, []);
+
+  const handleCycleCamera = useCallback(() => {
+    engineRef.current?.cycleCameraDistance();
+  }, []);
+
+  const handleRetryElimination = useCallback(() => {
+    engineRef.current?.retryFromElimination();
+  }, []);
+
   const currentWorld = getWorldById(activeLevel.worldId);
   const nextLevel = getNextLevelInWorld(activeLevel.id);
 
@@ -274,7 +321,6 @@ export default function App() {
             engineRef.current?.enterShowcase(worldId);
             setScreen('levels');
           }}
-          onUnlockWorldWithCoins={handleUnlockWorldWithCoins}
           onClose={() => setScreen('menu')}
         />
       )}
@@ -306,6 +352,7 @@ export default function App() {
         <SettingsModal
           saveData={saveData}
           onUpdateSave={updateSave}
+          onResetGame={handleResetGame}
           onClose={() => setScreen('menu')}
         />
       )}
@@ -329,11 +376,14 @@ export default function App() {
               setIsPaused(true);
               engineRef.current?.setPaused(true);
             }}
-            onRestart={() => {
-              setIsPaused(false);
-              setVictoryResult(null);
-              engineRef.current?.restartLevel();
-            }}
+            onRestart={() => startLevel(activeLevel)}
+            onVirtualMove={handleVirtualMove}
+            onVirtualSprint={handleVirtualSprint}
+            onVirtualCrouch={handleVirtualCrouch}
+            onVirtualJump={handleVirtualJump}
+            onVirtualInteract={handleVirtualInteract}
+            onCycleCamera={handleCycleCamera}
+            onRetryElimination={handleRetryElimination}
           />
 
           {isPaused && !victoryResult && !pauseSettingsOpen && (
@@ -344,10 +394,7 @@ export default function App() {
                 setIsPaused(false);
                 engineRef.current?.setPaused(false);
               }}
-              onRestart={() => {
-                setIsPaused(false);
-                engineRef.current?.restartLevel();
-              }}
+              onRestart={() => startLevel(activeLevel)}
               onOpenSettings={() => setPauseSettingsOpen(true)}
               onSelectLevels={() => {
                 soundEngine.stopMusic();
@@ -363,6 +410,7 @@ export default function App() {
             <SettingsModal
               saveData={saveData}
               onUpdateSave={updateSave}
+              onResetGame={handleResetGame}
               onClose={() => setPauseSettingsOpen(false)}
             />
           )}

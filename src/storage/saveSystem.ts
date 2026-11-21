@@ -1,8 +1,10 @@
 import { ActionKey, KeyBindings, LevelCompletionResult, LevelDef, SaveData, WorldId } from '../types/game';
 import { getNextLevelInWorld } from '../data/levels';
 import { getNextWorldId } from '../data/worlds';
+import { clearProceduralHistory } from '../engine/proceduralGenerator';
 
-const STORAGE_KEY = 'parkour_world_3d_save_v1';
+const STORAGE_KEY = 'hora_do_parkour_save_v1';
+const LEGACY_STORAGE_KEY = 'parkour_world_3d_save_v1';
 
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
   forward: 'KeyW',
@@ -61,7 +63,7 @@ export function createDefaultSaveData(): SaveData {
     unlockedWorlds: ['urban'],
     unlockedLevels: ['urban-1'],
     levelRecords: {},
-    purchasedSkins: ['urban_runner', 'sports_outfit', 'explorer'],
+    purchasedSkins: ['urban_runner'],
     equippedSkin: 'urban_runner',
     keyBindings: { ...DEFAULT_KEY_BINDINGS },
     settings: {
@@ -83,7 +85,7 @@ export function createDefaultSaveData(): SaveData {
 
 export function loadSaveData(): SaveData {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return createDefaultSaveData();
     const parsed = JSON.parse(raw) as Partial<SaveData>;
     const def = createDefaultSaveData();
@@ -115,6 +117,25 @@ export function persistSaveData(data: SaveData): void {
   } catch {
     // Ignore quota errors
   }
+}
+
+export function resetSaveData(): SaveData {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('hora_do_parkour') || key.startsWith('parkour_world_3d'))) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  clearProceduralHistory();
+  const fresh = createDefaultSaveData();
+  persistSaveData(fresh);
+  return fresh;
 }
 
 export function applyLevelCompletion(

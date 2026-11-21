@@ -383,7 +383,7 @@ const WORLD_BLUEPRINTS: Record<WorldId, LevelBlueprint[]> = {
     },
     {
       name: 'Cidadela do Rei',
-      description: 'A fase final de Parkour World 3D! Conquiste a coroa no topo do castelo.',
+      description: 'A fase final de Hora do Parkour! Conquiste a coroa no topo do castelo.',
       difficulty: 'Extremo',
       parTime: 105,
       baseReward: 400,

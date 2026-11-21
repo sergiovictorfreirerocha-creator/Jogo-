@@ -80,7 +80,7 @@ export function LevelSelectModal({
         <div className="p-6 overflow-y-auto space-y-3">
           {!isWorldUnlocked && (
             <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm">
-              Este mundo ainda está bloqueado. {world.unlockRequirementText} ou desbloqueie antecipadamente em <strong>SELECIONAR MUNDO</strong>.
+              Este mundo ainda está bloqueado. {world.unlockRequirementText} para desbloqueá-lo.
             </div>
           )}
 

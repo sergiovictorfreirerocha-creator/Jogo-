@@ -35,27 +35,33 @@ export function MainMenu({ saveData, onPlayContinue, onNavigate }: MainMenuProps
     <div className="fixed inset-0 z-10 flex flex-col justify-between p-6 md:p-10 pointer-events-none select-none">
       {/* Top Bar: Bespoke SVG Logo + Player Economy Summary */}
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="pointer-events-auto bg-slate-950/88 border border-slate-700/70 rounded-2xl px-6 py-4 shadow-2xl max-w-md">
-          <div className="flex items-center gap-3">
-            <svg width="44" height="44" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <div className="pointer-events-auto bg-slate-950/90 border border-slate-700/75 rounded-2xl px-6 py-4 shadow-2xl max-w-md">
+          <div className="flex items-center gap-3.5">
+            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true">
               <defs>
-                <linearGradient id="pwLogoGrad" x1="0" y1="0" x2="48" y2="48">
+                <linearGradient id="hdpLogoGrad" x1="0" y1="0" x2="48" y2="48">
                   <stop offset="0%" stopColor="#38bdf8" />
-                  <stop offset="100%" stopColor="#f97316" />
+                  <stop offset="60%" stopColor="#0ea5e9" />
+                  <stop offset="100%" stopColor="#f59e0b" />
                 </linearGradient>
               </defs>
-              <rect x="3" y="3" width="42" height="42" rx="11" fill="#0f172a" stroke="url(#pwLogoGrad)" strokeWidth="2.5" />
-              <path d="M13 33L21 15L28 24L35 13" stroke="#38bdf8" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-              <circle cx="35" cy="13" r="3.5" fill="#fbbf24" />
-              <path d="M11 36H37" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round" />
+              <rect x="3" y="3" width="42" height="42" rx="12" fill="#0f172a" stroke="url(#hdpLogoGrad)" strokeWidth="2.5" />
+              <path d="M12 33L20 15L27 24L36 12" stroke="#38bdf8" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="36" cy="12" r="3.5" fill="#fbbf24" />
+              <path d="M11 36H37" stroke="#f59e0b" strokeWidth="2.6" strokeLinecap="round" />
             </svg>
             <div>
               <h1 className="text-2xl md:text-3xl font-black tracking-tight text-white leading-none">
-                PARKOUR <span className="text-sky-400">WORLD</span> <span className="text-amber-400">3D</span>
+                HORA DO <span className="text-sky-400">PARKOUR</span>
               </h1>
-              <p className="text-xs text-slate-300 mt-1">
-                8 Mundos Únicos · 40 Fases · 15 Skins Desbloqueáveis
-              </p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="inline-block px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/50 text-[10px] font-black tracking-widest text-amber-300">
+                  BETA
+                </span>
+                <span className="text-[11px] text-slate-300">
+                  8 Mundos · Mapas Procedurais · 15 Skins
+                </span>
+              </div>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Keyboard, RotateCcw, Volume2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Keyboard, RotateCcw, Trash2, Volume2 } from 'lucide-react';
 import { ActionKey, CameraDistanceMode, SaveData } from '../types/game';
 import {
   ACTION_LABELS_PT,
@@ -11,6 +11,7 @@ import { soundEngine } from '../audio/soundEngine';
 interface SettingsModalProps {
   saveData: SaveData;
   onUpdateSave: (updater: (prev: SaveData) => SaveData) => void;
+  onResetGame: () => void;
   onClose: () => void;
 }
 
@@ -28,8 +29,9 @@ const ACTION_ORDER: ActionKey[] = [
   'pause',
 ];
 
-export function SettingsModal({ saveData, onUpdateSave, onClose }: SettingsModalProps) {
+export function SettingsModal({ saveData, onUpdateSave, onResetGame, onClose }: SettingsModalProps) {
   const [listeningAction, setListeningAction] = useState<ActionKey | null>(null);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   useEffect(() => {
     if (!listeningAction) return;
@@ -219,6 +221,31 @@ export function SettingsModal({ saveData, onUpdateSave, onClose }: SettingsModal
                 </button>
               </div>
             </div>
+
+            {/* Danger / Full Game Reset */}
+            <div className="bg-rose-950/25 border border-rose-500/35 rounded-xl p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-black text-rose-300 flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                  Dados e Progresso
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Apaga todo o progresso salvo (fases, mundos, moedas, skins, recordes e preferências) e restaura o jogo ao estado inicial.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playMenuClick();
+                  setListeningAction(null);
+                  setConfirmResetOpen(true);
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-black text-xs tracking-wide cursor-pointer shadow-lg transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                REINICIAR JOGO
+              </button>
+            </div>
           </div>
 
           {/* Right: Keyboard Remapping */}
@@ -276,6 +303,46 @@ export function SettingsModal({ saveData, onUpdateSave, onClose }: SettingsModal
           </div>
         </div>
       </div>
+
+      {confirmResetOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-slate-950/88">
+          <div className="w-full max-w-md bg-slate-900 border-2 border-rose-500/60 rounded-2xl p-6 shadow-2xl space-y-5">
+            <div className="flex flex-col items-center text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-rose-500/20 border border-rose-400/50 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-rose-400" />
+              </div>
+              <h3 className="text-lg font-black tracking-wide text-white">REINICIAR JOGO</h3>
+              <p className="text-sm text-slate-200 leading-relaxed">
+                Tem certeza de que deseja reiniciar o jogo? Todo o seu progresso será apagado e você começará do zero.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playMenuClick();
+                  setConfirmResetOpen(false);
+                }}
+                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 font-black text-xs tracking-wide cursor-pointer transition-colors"
+              >
+                CANCELAR
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.playMenuClick();
+                  setConfirmResetOpen(false);
+                  onResetGame();
+                }}
+                className="py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs tracking-wide cursor-pointer shadow-lg transition-colors"
+              >
+                REINICIAR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

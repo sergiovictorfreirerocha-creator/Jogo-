@@ -247,6 +247,24 @@ class SoundEngine {
     this.tone(380, 110, 0.32, 'sawtooth', 0.24);
   }
 
+  public playEliminated(): void {
+    this.tone(240, 75, 0.22, 'sawtooth', 0.38, 0);
+    this.tone(180, 52, 0.38, 'square', 0.28, 0.08);
+  }
+
+  public playBridgeWarning(): void {
+    this.tone(760, 620, 0.09, 'square', 0.24, 0);
+    this.tone(920, 740, 0.09, 'square', 0.22, 0.11);
+  }
+
+  public playBridgeVanish(): void {
+    this.tone(440, 140, 0.24, 'triangle', 0.26);
+  }
+
+  public playBridgeReady(): void {
+    this.tone(523.25, 659.25, 0.14, 'sine', 0.2);
+  }
+
   public playVictory(): void {
     const notes = [523.25, 659.25, 783.99, 1046.5];
     notes.forEach((f, idx) => {

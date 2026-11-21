@@ -39,8 +39,17 @@ interface RuntimePlatform {
   // Disappearing state
   disState: 'solid' | 'shaking' | 'gone';
   disTimer: number;
-  // Gate bridge active state
+  // Gate / temporary bridge state
   gateActive: boolean;
+  bridgeState: 'permanent' | 'ready' | 'active' | 'vanishing' | 'cooldown';
+  bridgeTimer: number;
+  bridgeDuration: number;
+  cooldownDuration: number;
+  warnBeep2s: boolean;
+  warnBeep1s: boolean;
+  baseColorHex: number;
+  baseEmissiveHex: number;
+  baseEmissiveInt: number;
 }
 
 interface RuntimeObstacle {
@@ -80,6 +89,7 @@ interface RuntimeSwitch {
   y: number;
   z: number;
   activated: boolean;
+  cooldown: boolean;
   leverMesh: THREE.Mesh;
   orbMesh: THREE.Mesh;
 }
@@ -102,6 +112,7 @@ export interface EngineCallbacks {
     fallsCount: number;
   }) => void;
   onPauseRequest: () => void;
+  onRestartRequest?: () => void;
   onCameraDistanceChange: (mode: CameraDistanceMode) => void;
   onJumpStat: () => void;
   onFallStat: () => void;
@@ -166,11 +177,17 @@ export class ParkourEngine {
   private particlePool: BurstParticle[] = [];
   private particleGeo: THREE.BoxGeometry;
 
-  // Run stats
+  // Run stats & elimination state
   private elapsedRunTime = 0;
+  private obstacleSimTime = 0;
   private collectedCoinsCount = 0;
   private collectedCoinsValue = 0;
   private fallsCount = 0;
+  private eliminated = false;
+  private eliminationTimer = 0;
+  private eliminationReason: string | null = null;
+  private fellFromTimedBridge = false;
+  private fellBridgeOriginY = 0;
   private toastMessage: string | null = null;
   private toastTimer = 0;
   private hudThrottle = 0;
@@ -183,6 +200,7 @@ export class ParkourEngine {
   private camSensitivity = 1.0;
   private camShake = 0;
   private isDraggingCam = false;
+  private activeCamPointerId: number | null = null;
   private lastPointerX = 0;
   private lastPointerY = 0;
   private raycaster = new THREE.Raycaster();
@@ -191,6 +209,10 @@ export class ParkourEngine {
   private heldKeys = new Set<string>();
   private keyBindings: KeyBindings;
   private particlesEnabled = true;
+  private virtualMoveX = 0;
+  private virtualMoveY = 0;
+  private virtualSprint = false;
+  private virtualCrouch = false;
 
   // Bound event listeners
   private onKeyDownBound: (e: KeyboardEvent) => void;
@@ -199,7 +221,7 @@ export class ParkourEngine {
   private onResizeBound: () => void;
   private onPointerDownBound: (e: PointerEvent) => void;
   private onPointerMoveBound: (e: PointerEvent) => void;
-  private onPointerUpBound: () => void;
+  private onPointerUpBound: (e: PointerEvent) => void;
   private onWheelBound: (e: WheelEvent) => void;
 
   constructor(container: HTMLElement, initialSave: SaveData, callbacks: EngineCallbacks) {
@@ -316,12 +338,23 @@ export class ParkourEngine {
     // Input & Resize listeners
     this.onKeyDownBound = this.handleKeyDown.bind(this);
     this.onKeyUpBound = this.handleKeyUp.bind(this);
-    this.onBlurBound = () => this.heldKeys.clear();
+    this.onBlurBound = () => {
+      this.heldKeys.clear();
+      this.virtualMoveX = 0;
+      this.virtualMoveY = 0;
+      this.virtualSprint = false;
+      this.virtualCrouch = false;
+      this.isDraggingCam = false;
+      this.activeCamPointerId = null;
+    };
     this.onResizeBound = this.handleResize.bind(this);
     this.onPointerDownBound = this.handlePointerDown.bind(this);
     this.onPointerMoveBound = this.handlePointerMove.bind(this);
-    this.onPointerUpBound = () => {
-      this.isDraggingCam = false;
+    this.onPointerUpBound = (e: PointerEvent) => {
+      if (this.activeCamPointerId === null || e.pointerId === this.activeCamPointerId) {
+        this.isDraggingCam = false;
+        this.activeCamPointerId = null;
+      }
     };
     this.onWheelBound = this.handleWheel.bind(this);
 
@@ -330,9 +363,11 @@ export class ParkourEngine {
     window.addEventListener('blur', this.onBlurBound);
     window.addEventListener('resize', this.onResizeBound);
     const dom = this.renderer.domElement;
+    dom.style.touchAction = 'none';
     dom.addEventListener('pointerdown', this.onPointerDownBound);
     window.addEventListener('pointermove', this.onPointerMoveBound);
     window.addEventListener('pointerup', this.onPointerUpBound);
+    window.addEventListener('pointercancel', this.onPointerUpBound);
     dom.addEventListener('wheel', this.onWheelBound, { passive: true });
 
     this.lastTimeMs = performance.now();
@@ -365,6 +400,7 @@ export class ParkourEngine {
 
   public enterShowcase(worldId: LevelDef['worldId'] = 'urban'): void {
     this.mode = 'showcase';
+    this.currentLevel = null;
     this.clearLevel();
     this.applyWorldAtmosphere(getWorldById(worldId));
     // Build a hero rooftop pedestal for the menu backdrop
@@ -387,9 +423,26 @@ export class ParkourEngine {
     this.grounded = true;
     this.crouching = false;
     this.sprinting = false;
+    this.eliminated = false;
+    this.eliminationTimer = 0;
+    this.eliminationReason = null;
+    this.fellFromTimedBridge = false;
+    this.fellBridgeOriginY = 0;
+    this.activeCheckpointIndex = 0;
+    this.elapsedRunTime = 0;
+    this.collectedCoinsCount = 0;
+    this.collectedCoinsValue = 0;
+    this.fallsCount = 0;
+    this.toastMessage = null;
+    this.toastTimer = 0;
+    this.heldKeys.clear();
+    this.virtualMoveX = 0;
+    this.virtualMoveY = 0;
+    this.virtualSprint = false;
+    this.virtualCrouch = false;
     if (this.playerRig) {
       this.playerRig.root.position.copy(this.playerPos);
-      this.playerRig.root.rotation.y = this.playerYaw;
+      this.playerRig.root.rotation.set(0, this.playerYaw, 0);
     }
   }
 
@@ -437,7 +490,7 @@ export class ParkourEngine {
         emissive = world.accentColor;
         emissiveInt = 0.45;
         transparent = true;
-        opacity = 0.22;
+        opacity = 0.34;
       } else if (p.kind === 'narrow') {
         color = world.secondaryPlatformColor;
       }
@@ -475,6 +528,7 @@ export class ParkourEngine {
         this.levelDisposables.push(ringGeo, ringMat);
       }
 
+      const isBridge = p.kind === 'gate_bridge';
       this.platforms.push({
         def: p,
         mesh,
@@ -487,7 +541,16 @@ export class ParkourEngine {
         prevZ: p.z,
         disState: 'solid',
         disTimer: 0,
-        gateActive: p.kind !== 'gate_bridge',
+        gateActive: !isBridge,
+        bridgeState: isBridge ? 'ready' : 'permanent',
+        bridgeTimer: 0,
+        bridgeDuration: p.timedDuration ?? 6.0,
+        cooldownDuration: p.cooldownDuration ?? 4.0,
+        warnBeep2s: false,
+        warnBeep1s: false,
+        baseColorHex: color,
+        baseEmissiveHex: emissive,
+        baseEmissiveInt: emissiveInt,
       });
     });
 
@@ -495,16 +558,25 @@ export class ParkourEngine {
     level.obstacles.forEach((o) => {
       const geo = new THREE.BoxGeometry(o.w, o.h, o.d);
       const isLaser = o.kind === 'laser_bar';
+      const isLethal = this.isLethalObstacleDef(o);
+      const obsColor = isLaser
+        ? 0xf43f5e
+        : o.kind === 'crusher'
+          ? 0xef4444
+          : o.kind === 'moving_wall' || o.kind === 'moving_block'
+            ? 0xf97316
+            : world.hazardColor;
       const mat = new THREE.MeshStandardMaterial({
         map: isLaser ? null : hazardTex,
-        color: isLaser ? 0xf43f5e : world.hazardColor,
-        emissive: isLaser ? 0xf43f5e : world.hazardColor,
-        emissiveIntensity: isLaser ? 1.2 : 0.35,
-        roughness: 0.4,
-        metalness: 0.4,
+        color: obsColor,
+        emissive: isLaser ? 0xf43f5e : isLethal ? 0xdc2626 : world.hazardColor,
+        emissiveIntensity: isLaser ? 1.2 : isLethal ? 0.55 : 0.3,
+        roughness: 0.35,
+        metalness: 0.45,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(o.x, o.y, o.z);
+      mesh.rotation.y = o.phase || 0;
       mesh.castShadow = true;
       this.levelGroup.add(mesh);
       this.levelDisposables.push(geo, mat);
@@ -623,6 +695,7 @@ export class ParkourEngine {
         y: sw.y,
         z: sw.z,
         activated: false,
+        cooldown: false,
         leverMesh,
         orbMesh,
       });
@@ -669,18 +742,73 @@ export class ParkourEngine {
     this.activeCheckpointIndex = 0;
 
     this.elapsedRunTime = 0;
+    this.obstacleSimTime = 0;
     this.collectedCoinsCount = 0;
     this.collectedCoinsValue = 0;
     this.fallsCount = 0;
+    this.eliminated = false;
+    this.eliminationTimer = 0;
+    this.eliminationReason = null;
+    this.fellFromTimedBridge = false;
+    this.fellBridgeOriginY = 0;
     this.toastMessage = null;
     this.toastTimer = 0;
+    if (this.playerRig) {
+      this.playerRig.root.rotation.set(0, this.playerYaw, 0);
+    }
 
     this.mode = 'playing';
     soundEngine.startWorldMusic(world.id);
+    if (level.seed !== undefined) {
+      this.showToast('Novo percurso procedural gerado!');
+    }
     this.pushHudSnapshot();
   }
 
+  public retryFromElimination(): void {
+    if (this.eliminated) {
+      this.completeEliminationRespawn();
+    }
+  }
+
+  public setVirtualMove(x: number, y: number): void {
+    this.virtualMoveX = Math.max(-1, Math.min(1, x));
+    this.virtualMoveY = Math.max(-1, Math.min(1, y));
+  }
+
+  public setVirtualFlags(opts: { sprint?: boolean; crouch?: boolean }): void {
+    if (opts.sprint !== undefined) this.virtualSprint = opts.sprint;
+    if (opts.crouch !== undefined) this.virtualCrouch = opts.crouch;
+  }
+
+  public triggerVirtualJump(): void {
+    soundEngine.unlock();
+    if (this.mode === 'playing' && !this.eliminated) {
+      this.jumpBufferTimer = 0.14;
+    }
+  }
+
+  public triggerVirtualInteract(): void {
+    soundEngine.unlock();
+    if (this.mode === 'playing' && !this.eliminated) {
+      this.tryInteract();
+    }
+  }
+
+  public cycleCameraDistance(): void {
+    const order: CameraDistanceMode[] = ['close', 'medium', 'far'];
+    const next = order[(order.indexOf(this.camDistMode) + 1) % order.length];
+    this.camDistMode = next;
+    this.callbacks.onCameraDistanceChange(next);
+    const label = next === 'close' ? 'Próxima' : next === 'medium' ? 'Média' : 'Distante';
+    this.showToast(`Câmera: ${label}`);
+  }
+
   public restartLevel(): void {
+    if (this.callbacks.onRestartRequest) {
+      this.callbacks.onRestartRequest();
+      return;
+    }
     if (this.currentLevel) {
       this.loadLevel(this.currentLevel);
       this.showToast('Fase reiniciada!');
@@ -691,6 +819,10 @@ export class ParkourEngine {
     if (this.mode === 'victory' || this.mode === 'showcase') return;
     this.mode = paused ? 'paused' : 'playing';
     this.heldKeys.clear();
+    this.virtualMoveX = 0;
+    this.virtualMoveY = 0;
+    this.virtualSprint = false;
+    this.virtualCrouch = false;
   }
 
   private applyWorldAtmosphere(world: WorldDef): void {
@@ -706,7 +838,7 @@ export class ParkourEngine {
     this.hemiLight.groundColor.setHex(world.ambientGround);
     this.sunLight.color.setHex(world.sunColor);
 
-    this.scenery = buildWorldScenery(world, this.particlesEnabled);
+    this.scenery = buildWorldScenery(world, this.particlesEnabled, this.currentLevel ?? undefined);
     this.scene.add(this.scenery.group);
   }
 
@@ -758,6 +890,19 @@ export class ParkourEngine {
       return;
     }
 
+    if (this.eliminated) {
+      if (!e.repeat && (e.code === 'Enter' || e.code === this.keyBindings.jump)) {
+        e.preventDefault();
+        this.retryFromElimination();
+      } else if (!e.repeat && e.code === this.keyBindings.restart) {
+        this.restartLevel();
+      } else if (!e.repeat && e.code === this.keyBindings.pause) {
+        e.preventDefault();
+        this.callbacks.onPauseRequest();
+      }
+      return;
+    }
+
     const wasHeld = this.heldKeys.has(e.code);
     this.heldKeys.add(e.code);
 
@@ -798,13 +943,15 @@ export class ParkourEngine {
   private handlePointerDown(e: PointerEvent): void {
     soundEngine.unlock();
     if (this.mode !== 'playing') return;
+    if (this.isDraggingCam && this.activeCamPointerId !== null) return;
     this.isDraggingCam = true;
+    this.activeCamPointerId = e.pointerId;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
   }
 
   private handlePointerMove(e: PointerEvent): void {
-    if (this.mode !== 'playing' || !this.isDraggingCam) return;
+    if (this.mode !== 'playing' || !this.isDraggingCam || e.pointerId !== this.activeCamPointerId) return;
     const dx = e.clientX - this.lastPointerX;
     const dy = e.clientY - this.lastPointerY;
     this.lastPointerX = e.clientX;
@@ -835,27 +982,68 @@ export class ParkourEngine {
     this.renderer.setSize(w, h);
   }
 
+  private isLethalObstacleDef(o: ObstacleDef): boolean {
+    if (o.kind === 'crouch_beam' || o.kind === 'wall') {
+      return Boolean(o.lethal);
+    }
+    if (o.kind === 'laser_bar') {
+      return o.lethal !== false;
+    }
+    return (
+      o.kind === 'rotator' ||
+      o.kind === 'pendulum' ||
+      o.kind === 'moving_block' ||
+      o.kind === 'moving_wall' ||
+      o.kind === 'crusher'
+    );
+  }
+
+  private activateBridgeGroup(groupKey: string, viaSwitch?: RuntimeSwitch): void {
+    let activatedAny = false;
+    let duration = 6.0;
+    for (const p of this.platforms) {
+      if (p.def.kind !== 'gate_bridge') continue;
+      const matches = p.def.switchId === groupKey || p.def.bridgeGroupId === groupKey;
+      if (!matches || p.bridgeState !== 'ready') continue;
+      p.bridgeState = 'active';
+      p.bridgeTimer = p.bridgeDuration;
+      duration = p.bridgeDuration;
+      p.warnBeep2s = false;
+      p.warnBeep1s = false;
+      p.gateActive = true;
+      p.mesh.visible = true;
+      p.mesh.scale.set(1, 1, 1);
+      const pMat = p.mesh.material as THREE.MeshStandardMaterial;
+      pMat.color.setHex(p.baseColorHex);
+      pMat.emissive.setHex(p.baseEmissiveHex);
+      pMat.emissiveIntensity = 0.72;
+      pMat.opacity = 0.94;
+      pMat.transparent = false;
+      activatedAny = true;
+    }
+
+    if (!activatedAny) return;
+
+    if (viaSwitch) {
+      viaSwitch.activated = true;
+      viaSwitch.cooldown = false;
+      const mat = viaSwitch.orbMesh.material as THREE.MeshStandardMaterial;
+      mat.color.setHex(0x10b981);
+      mat.emissive.setHex(0x10b981);
+      this.spawnBurst(viaSwitch.x, viaSwitch.y + 1.2, viaSwitch.z, 0x34d399, 14);
+    }
+
+    soundEngine.playSwitch();
+    this.showToast(`Ponte temporária ativada (${Math.round(duration)}s)!`);
+    this.pushHudSnapshot();
+  }
+
   private tryInteract(): void {
     for (const sw of this.switches) {
-      if (sw.activated) continue;
+      if (sw.activated || sw.cooldown) continue;
       const dist = Math.hypot(this.playerPos.x - sw.x, this.playerPos.y - sw.y, this.playerPos.z - sw.z);
-      if (dist <= 3.0) {
-        sw.activated = true;
-        const mat = sw.orbMesh.material as THREE.MeshStandardMaterial;
-        mat.color.setHex(0x10b981);
-        mat.emissive.setHex(0x10b981);
-        for (const p of this.platforms) {
-          if (p.def.switchId === sw.id) {
-            p.gateActive = true;
-            const pMat = p.mesh.material as THREE.MeshStandardMaterial;
-            pMat.opacity = 0.92;
-            pMat.transparent = false;
-            pMat.emissiveIntensity = 0.65;
-          }
-        }
-        soundEngine.playSwitch();
-        this.spawnBurst(sw.x, sw.y + 1.2, sw.z, 0x34d399, 14);
-        this.showToast('Ponte ativada!');
+      if (dist <= 3.6) {
+        this.activateBridgeGroup(sw.id, sw);
         return;
       }
     }
@@ -936,24 +1124,88 @@ export class ParkourEngine {
       return;
     }
 
-    // Active Gameplay Simulation
-    this.elapsedRunTime += dt;
     if (this.toastTimer > 0) {
       this.toastTimer -= dt;
       if (this.toastTimer <= 0) this.toastMessage = null;
     }
 
-    // 1. Update platforms (moving + disappearing)
+    // Handle active elimination defeat animation & auto-respawn countdown
+    if (this.eliminated) {
+      this.eliminationTimer -= dt;
+      this.playerVel.y = Math.max(-24, this.playerVel.y + this.currentWorld.gravity * dt);
+      this.playerPos.x += this.playerVel.x * dt;
+      this.playerPos.z += this.playerVel.z * dt;
+      this.playerPos.y += this.playerVel.y * dt;
+
+      if (this.playerRig) {
+        this.playerRig.root.position.copy(this.playerPos);
+        this.playerRig.root.rotation.y = this.playerYaw;
+        this.playerRig.root.rotation.x = THREE.MathUtils.damp(
+          this.playerRig.root.rotation.x,
+          -Math.PI * 0.48,
+          10,
+          dt
+        );
+        this.playerRig.root.rotation.z += dt * 4.5;
+      }
+
+      this.updateParticles(dt);
+      this.updateCamera(dt);
+      this.scenery?.update(dt, this.simTime, this.playerPos);
+
+      this.hudThrottle += dt;
+      if (this.hudThrottle >= 0.08) {
+        this.hudThrottle = 0;
+        this.pushHudSnapshot();
+      }
+
+      if (this.eliminationTimer <= 0) {
+        this.completeEliminationRespawn();
+      }
+      return;
+    }
+
+    // Active Gameplay Simulation
+    this.elapsedRunTime += dt;
+    this.obstacleSimTime += dt;
+
+    // 0. Proximity auto-activation for temporary bridges / close switch pads
+    for (const sw of this.switches) {
+      if (!sw.activated && !sw.cooldown) {
+        const dist = Math.hypot(this.playerPos.x - sw.x, this.playerPos.y - sw.y, this.playerPos.z - sw.z);
+        if (dist <= 1.35) {
+          this.activateBridgeGroup(sw.id, sw);
+        }
+      }
+    }
+    for (const p of this.platforms) {
+      if (p.def.kind === 'gate_bridge' && p.bridgeState === 'ready' && p.def.autoTrigger) {
+        const tx = p.def.triggerPos ? p.def.triggerPos.x : p.def.x;
+        const ty = p.def.triggerPos ? p.def.triggerPos.y : p.def.y + p.def.h / 2;
+        const tz = p.def.triggerPos ? p.def.triggerPos.z : p.def.z;
+        const dist = Math.hypot(this.playerPos.x - tx, this.playerPos.y - ty, this.playerPos.z - tz);
+        if (dist <= 3.1) {
+          this.activateBridgeGroup(p.def.bridgeGroupId || p.def.switchId || p.def.id);
+        }
+      }
+    }
+
+    // 1. Update platforms (moving + disappearing + temporary timed bridges)
+    const warnedBeep2sGroups = new Set<string>();
+    const warnedBeep1sGroups = new Set<string>();
+    const vanishedGroups = new Set<string>();
+    const readyGroups = new Set<string>();
+
     for (const p of this.platforms) {
       p.prevX = p.curX;
       p.prevY = p.curY;
       p.prevZ = p.curZ;
 
-      if (p.def.kind === 'moving') {
+      if (p.def.kind === 'moving' || (p.def.kind === 'gate_bridge' && p.def.moveRange && p.def.moveAxis)) {
         const speed = p.def.moveSpeed ?? 1.2;
         const range = p.def.moveRange ?? 3;
         const phase = p.def.movePhase ?? 0;
-        const offset = Math.sin(this.simTime * speed + phase) * range;
+        const offset = Math.sin(this.obstacleSimTime * speed + phase) * range;
         if (p.def.moveAxis === 'x') p.curX = p.def.x + offset;
         if (p.def.moveAxis === 'y') p.curY = p.def.y + offset;
         if (p.def.moveAxis === 'z') p.curZ = p.def.z + offset;
@@ -978,26 +1230,187 @@ export class ParkourEngine {
           }
         }
       }
+
+      if (p.def.kind === 'gate_bridge') {
+        const groupKey = p.def.bridgeGroupId || p.def.switchId || p.def.id;
+        const mat = p.mesh.material as THREE.MeshStandardMaterial;
+        if (p.bridgeState === 'active') {
+          p.bridgeTimer -= dt;
+          if (p.bridgeTimer <= 2.0) {
+            const pulse = Math.sin(this.simTime * 22) * 0.5 + 0.5;
+            mat.color.setHex(pulse > 0.5 ? 0xf97316 : 0xef4444);
+            mat.emissive.setHex(0xef4444);
+            mat.emissiveIntensity = 0.65 + pulse * 0.55;
+            p.mesh.position.set(
+              p.curX + Math.sin(this.simTime * 52) * 0.045,
+              p.curY,
+              p.curZ
+            );
+            if (!p.warnBeep2s) {
+              p.warnBeep2s = true;
+              if (!warnedBeep2sGroups.has(groupKey)) {
+                warnedBeep2sGroups.add(groupKey);
+                soundEngine.playBridgeWarning();
+              }
+            }
+            if (p.bridgeTimer <= 1.0 && !p.warnBeep1s) {
+              p.warnBeep1s = true;
+              if (!warnedBeep1sGroups.has(groupKey)) {
+                warnedBeep1sGroups.add(groupKey);
+                soundEngine.playBridgeWarning();
+              }
+            }
+          }
+
+          if (p.bridgeTimer <= 0) {
+            const standingOnThis =
+              this.groundedPlatform === p ||
+              (Math.abs(this.playerPos.x - p.curX) <= p.def.w / 2 + 0.35 &&
+                Math.abs(this.playerPos.z - p.curZ) <= p.def.d / 2 + 0.35 &&
+                Math.abs(this.playerPos.y - (p.curY + p.def.h / 2)) <= 0.45);
+            if (standingOnThis) {
+              this.fellFromTimedBridge = true;
+              this.fellBridgeOriginY = p.curY + p.def.h / 2;
+              this.grounded = false;
+              this.groundedPlatform = null;
+            }
+            p.bridgeState = 'vanishing';
+            p.bridgeTimer = 0.28;
+            p.gateActive = false;
+            mat.transparent = true;
+            if (!vanishedGroups.has(groupKey)) {
+              vanishedGroups.add(groupKey);
+              soundEngine.playBridgeVanish();
+              this.spawnBurst(p.curX, p.curY + p.def.h / 2, p.curZ, 0xf97316, 12);
+            }
+            for (const sw of this.switches) {
+              if (sw.id === p.def.switchId) {
+                sw.cooldown = true;
+                const orbMat = sw.orbMesh.material as THREE.MeshStandardMaterial;
+                orbMat.color.setHex(0x64748b);
+                orbMat.emissive.setHex(0x475569);
+              }
+            }
+          }
+        } else if (p.bridgeState === 'vanishing') {
+          p.bridgeTimer -= dt;
+          const ratio = Math.max(0.02, p.bridgeTimer / 0.28);
+          p.mesh.scale.set(ratio, ratio, ratio);
+          mat.opacity = ratio * 0.85;
+          if (p.bridgeTimer <= 0) {
+            p.bridgeState = 'cooldown';
+            p.bridgeTimer = p.cooldownDuration;
+            p.mesh.visible = false;
+            p.mesh.scale.set(1, 1, 1);
+          }
+        } else if (p.bridgeState === 'cooldown') {
+          p.bridgeTimer -= dt;
+          if (p.bridgeTimer <= 0) {
+            p.bridgeState = 'ready';
+            p.bridgeTimer = 0;
+            p.gateActive = false;
+            p.mesh.visible = true;
+            p.mesh.scale.set(1, 1, 1);
+            p.mesh.position.set(p.curX, p.curY, p.curZ);
+            mat.color.setHex(p.baseColorHex);
+            mat.emissive.setHex(p.baseEmissiveHex);
+            mat.emissiveIntensity = p.baseEmissiveInt;
+            mat.transparent = true;
+            mat.opacity = 0.34;
+            for (const sw of this.switches) {
+              if (sw.id === p.def.switchId) {
+                sw.activated = false;
+                sw.cooldown = false;
+                const orbMat = sw.orbMesh.material as THREE.MeshStandardMaterial;
+                orbMat.color.setHex(0xef4444);
+                orbMat.emissive.setHex(0xef4444);
+              }
+            }
+            if (!readyGroups.has(groupKey)) {
+              readyGroups.add(groupKey);
+              soundEngine.playBridgeReady();
+              this.showToast('Ponte temporária disponível novamente!');
+            }
+          }
+        }
+      }
     }
 
     // 2. Carry player with moving platform if standing on one
-    if (this.grounded && this.groundedPlatform && this.groundedPlatform.disState !== 'gone') {
+    if (this.grounded && this.groundedPlatform && this.groundedPlatform.gateActive && this.groundedPlatform.disState !== 'gone') {
       this.playerPos.x += this.groundedPlatform.curX - this.groundedPlatform.prevX;
       this.playerPos.y += this.groundedPlatform.curY - this.groundedPlatform.prevY;
       this.playerPos.z += this.groundedPlatform.curZ - this.groundedPlatform.prevZ;
     }
 
-    // 3. Update obstacles
+    // 3. Update obstacles using resettable obstacleSimTime
     for (const o of this.obstacles) {
       if (o.def.kind === 'rotator') {
-        o.angle += (o.def.speed ?? 1.5) * dt;
+        o.angle = (o.def.phase ?? 0) + (o.def.speed ?? 1.6) * this.obstacleSimTime;
         o.mesh.rotation.y = o.angle;
       } else if (o.def.kind === 'pendulum') {
         const range = o.def.range ?? 2.2;
         const speed = o.def.speed ?? 2.0;
-        o.curX = o.def.x + Math.sin(this.simTime * speed + (o.def.phase ?? 0)) * range;
-        o.mesh.position.x = o.curX;
-        o.mesh.rotation.z = Math.cos(this.simTime * speed) * 0.35;
+        const t = this.obstacleSimTime * speed + (o.def.phase ?? 0);
+        const swing = Math.sin(t) * range;
+        const tilt = Math.sin(t) * 0.35;
+        o.curY = o.def.y + (1 - Math.cos(tilt)) * 0.55;
+        o.mesh.position.y = o.curY;
+        if (o.def.axis === 'z') {
+          o.curZ = o.def.z + swing;
+          o.mesh.position.z = o.curZ;
+          o.mesh.rotation.x = Math.cos(t) * 0.35;
+        } else {
+          o.curX = o.def.x + swing;
+          o.mesh.position.x = o.curX;
+          o.mesh.rotation.z = Math.cos(t) * 0.35;
+        }
+      } else if (o.def.kind === 'moving_block' || o.def.kind === 'moving_wall') {
+        const range = o.def.range ?? 2.2;
+        const speed = o.def.speed ?? 1.8;
+        const offset = Math.sin(this.obstacleSimTime * speed + (o.def.phase ?? 0)) * range;
+        if (o.def.axis === 'z') {
+          o.curZ = o.def.z + offset;
+          o.mesh.position.z = o.curZ;
+        } else {
+          o.curX = o.def.x + offset;
+          o.mesh.position.x = o.curX;
+        }
+      } else if (o.def.kind === 'crusher') {
+        const speed = o.def.speed ?? 1.1;
+        const liftH = o.def.range ?? 3.2;
+        const period = 2.6 / Math.max(0.5, speed);
+        const phaseOffset = ((o.def.phase ?? 0) / (Math.PI * 2)) * period;
+        const u = ((this.obstacleSimTime + phaseOffset) % period) / period;
+        let heightRatio = 1;
+        if (u < 0.45) {
+          heightRatio = 1; // held high
+        } else if (u < 0.62) {
+          // fast slam down
+          const k = (u - 0.45) / 0.17;
+          heightRatio = 1 - k * k;
+        } else if (u < 0.8) {
+          heightRatio = 0; // resting on deck
+        } else {
+          // smooth lift back up
+          heightRatio = (u - 0.8) / 0.2;
+        }
+        o.curY = o.def.y + heightRatio * liftH;
+        o.mesh.position.y = o.curY;
+      } else if (o.def.kind === 'laser_bar' && (o.def.range ?? 0) > 0) {
+        const range = o.def.range ?? 1.8;
+        const speed = o.def.speed ?? 2.0;
+        const offset = Math.sin(this.obstacleSimTime * speed + (o.def.phase ?? 0)) * range;
+        if (o.def.axis === 'z') {
+          o.curZ = o.def.z + offset;
+          o.mesh.position.z = o.curZ;
+        } else if (o.def.axis === 'x') {
+          o.curX = o.def.x + offset;
+          o.mesh.position.x = o.curX;
+        } else {
+          o.curY = o.def.y + offset;
+          o.mesh.position.y = o.curY;
+        }
       }
     }
 
@@ -1005,23 +1418,29 @@ export class ParkourEngine {
     if (this.heldKeys.has('ArrowLeft')) this.camYaw += 2.1 * dt;
     if (this.heldKeys.has('ArrowRight')) this.camYaw -= 2.1 * dt;
 
-    // 5. Player movement input
+    // 5. Player movement input (keyboard + touch virtual controls)
     const kb = this.keyBindings;
-    const fIn = (this.heldKeys.has(kb.forward) || this.heldKeys.has('ArrowUp') ? 1 : 0) -
-                (this.heldKeys.has(kb.backward) || this.heldKeys.has('ArrowDown') ? 1 : 0);
-    const rIn = (this.heldKeys.has(kb.right) ? 1 : 0) -
-                (this.heldKeys.has(kb.left) ? 1 : 0);
+    const keyF = (this.heldKeys.has(kb.forward) || this.heldKeys.has('ArrowUp') ? 1 : 0) -
+                 (this.heldKeys.has(kb.backward) || this.heldKeys.has('ArrowDown') ? 1 : 0);
+    const keyR = (this.heldKeys.has(kb.right) ? 1 : 0) -
+                 (this.heldKeys.has(kb.left) ? 1 : 0);
+    const virtualMag = Math.hypot(this.virtualMoveX, this.virtualMoveY);
+    const hasVirtualMove = virtualMag > 0.01;
+    const fIn = hasVirtualMove ? this.virtualMoveY : keyF;
+    const rIn = hasVirtualMove ? this.virtualMoveX : keyR;
 
-    this.crouching = this.heldKeys.has(kb.crouch) || this.heldKeys.has('ControlRight');
-    this.sprinting = !this.crouching && (this.heldKeys.has(kb.sprint) || this.heldKeys.has('ShiftRight'));
+    this.crouching = this.virtualCrouch || this.heldKeys.has(kb.crouch) || this.heldKeys.has('ControlRight');
+    this.sprinting = !this.crouching && (this.virtualSprint || this.heldKeys.has(kb.sprint) || this.heldKeys.has('ShiftRight'));
 
-    const targetSpeed = this.crouching ? 4.2 : this.sprinting ? 11.4 : 7.6;
+    const targetSpeed = this.crouching ? 3.8 : this.sprinting ? 10.3 : 6.8;
 
     _forwardVec.set(-Math.sin(this.camYaw), 0, -Math.cos(this.camYaw));
     _rightVec.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
     _moveDir.set(0, 0, 0).addScaledVector(_forwardVec, fIn).addScaledVector(_rightVec, rIn);
-    if (_moveDir.lengthSq() > 0.001) {
-      _moveDir.normalize();
+    const rawInputLen = _moveDir.length();
+    const inputMag = Math.min(1, rawInputLen);
+    if (rawInputLen > 0.005) {
+      _moveDir.divideScalar(rawInputLen);
       const targetYaw = Math.atan2(_moveDir.x, _moveDir.z);
       // Shortest angle lerp
       let diff = targetYaw - this.playerYaw;
@@ -1037,10 +1456,10 @@ export class ParkourEngine {
     const accel = this.grounded ? (onIce ? 8.5 : 42.0) : 20.0;
     const decel = this.grounded ? (onIce ? 2.4 : 32.0) : 4.5;
 
-    const desiredVx = _moveDir.x * targetSpeed;
-    const desiredVz = _moveDir.z * targetSpeed;
+    const desiredVx = _moveDir.x * targetSpeed * inputMag;
+    const desiredVz = _moveDir.z * targetSpeed * inputMag;
 
-    if (_moveDir.lengthSq() > 0.001) {
+    if (rawInputLen > 0.005) {
       this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, desiredVx, accel * 0.25, dt);
       this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, desiredVz, accel * 0.25, dt);
     } else {
@@ -1218,9 +1637,14 @@ export class ParkourEngine {
       }
     }
 
-    // Fall limit check
+    // Fall limit / vanished temporary bridge elimination check
+    if (this.fellFromTimedBridge && !this.grounded && this.playerPos.y < this.fellBridgeOriginY - 2.4) {
+      this.triggerElimination('A ponte temporária desapareceu!');
+      return;
+    }
     if (this.currentLevel && this.playerPos.y < this.currentLevel.fallLimitY) {
-      this.respawnAtCheckpoint();
+      this.triggerElimination('Você caiu no abismo!');
+      return;
     }
 
     // 9. Update character rig, shadow, particles, lights, camera
@@ -1230,7 +1654,7 @@ export class ParkourEngine {
       const horizSpeed = Math.hypot(this.playerVel.x, this.playerVel.z);
       animateCharacterRig(this.playerRig, {
         speed: horizSpeed,
-        maxSpeed: 11.4,
+        maxSpeed: 10.3,
         grounded: this.grounded,
         crouching: this.crouching,
         vy: this.playerVel.y,
@@ -1296,12 +1720,14 @@ export class ParkourEngine {
       const top = o.curY + o.def.h / 2;
       const bottom = o.curY - o.def.h / 2;
       // Vertical overlap check (crouching lowers playerPos.y + pHeight so player passes under crouch_beam!)
-      if (this.playerPos.y + pHeight <= bottom + 0.04 || this.playerPos.y >= top - 0.04) {
+      if (this.playerPos.y + pHeight <= bottom + 0.05 || this.playerPos.y >= top - 0.05) {
         continue;
       }
 
+      const lethal = this.isLethalObstacleDef(o.def);
+
       if (o.def.kind === 'rotator') {
-        // Check distance from player XZ to rotating bar line segment
+        // Real oriented box/bar check in local rotated space
         const halfLen = o.def.w / 2;
         const cosA = Math.cos(-o.angle);
         const sinA = Math.sin(-o.angle);
@@ -1309,9 +1735,16 @@ export class ParkourEngine {
         const relZ = this.playerPos.z - o.curZ;
         const localX = relX * cosA - relZ * sinA;
         const localZ = relX * sinA + relZ * cosA;
-        const barHalfD = o.def.d / 2 + pRadius;
-        if (Math.abs(localX) <= halfLen + pRadius && Math.abs(localZ) <= barHalfD) {
-          // Knock player cleanly away from bar
+        const barHalfD = o.def.d / 2 + pRadius * 0.9;
+        if (Math.abs(localX) <= halfLen + pRadius * 0.9 && Math.abs(localZ) <= barHalfD) {
+          if (lethal) {
+            const pushSign = localZ >= 0 ? 1 : -1;
+            this.playerVel.x = -sinA * pushSign * 7.5;
+            this.playerVel.z = cosA * pushSign * 7.5;
+            this.playerVel.y = 6.0;
+            this.triggerElimination('Atingido por barra giratória!');
+            return;
+          }
           const pushSign = localZ >= 0 ? 1 : -1;
           const worldPushX = -sinA * pushSign;
           const worldPushZ = cosA * pushSign;
@@ -1322,11 +1755,26 @@ export class ParkourEngine {
           soundEngine.playLand(12);
         }
       } else {
-        const halfW = o.def.w / 2 + pRadius;
-        const halfD = o.def.d / 2 + pRadius;
+        const halfW = o.def.w / 2 + pRadius * 0.9;
+        const halfD = o.def.d / 2 + pRadius * 0.9;
         const dx = this.playerPos.x - o.curX;
         const dz = this.playerPos.z - o.curZ;
         if (Math.abs(dx) < halfW && Math.abs(dz) < halfD) {
+          if (lethal) {
+            this.playerVel.x = (dx >= 0 ? 1 : -1) * 5.5;
+            this.playerVel.z = (dz >= 0 ? 1 : -1) * 5.5;
+            this.playerVel.y = 5.5;
+            const reason =
+              o.def.kind === 'pendulum'
+                ? 'Atingido por pêndulo mortal!'
+                : o.def.kind === 'crusher'
+                  ? 'Esmagado por obstáculo!'
+                  : o.def.kind === 'laser_bar'
+                    ? 'Atingido por laser mortal!'
+                    : 'Atingido por obstáculo móvel!';
+            this.triggerElimination(reason);
+            return;
+          }
           const overlapX = halfW - Math.abs(dx);
           const overlapZ = halfD - Math.abs(dz);
           if (overlapX < overlapZ) {
@@ -1336,30 +1784,105 @@ export class ParkourEngine {
             this.playerPos.z = o.curZ + (dz >= 0 ? halfD : -halfD);
             this.playerVel.z = (dz >= 0 ? 1 : -1) * 5.0;
           }
-          if (o.def.kind === 'pendulum') {
-            this.playerVel.y = 4.0;
-            this.camShake = 0.25;
-            soundEngine.playLand(10);
-          }
         }
       }
     }
   }
 
-  private respawnAtCheckpoint(): void {
+  private triggerElimination(reason: string): void {
+    if (this.eliminated) return;
+    this.eliminated = true;
+    this.eliminationTimer = 2.0;
+    this.eliminationReason = reason;
     this.fallsCount++;
     this.callbacks.onFallStat();
+    this.heldKeys.clear();
+    this.virtualMoveX = 0;
+    this.virtualMoveY = 0;
+    this.virtualSprint = false;
+    this.virtualCrouch = false;
+    this.grounded = false;
+    this.groundedPlatform = null;
+    this.camShake = 0.48;
+    soundEngine.playEliminated();
+    this.spawnBurst(this.playerPos.x, this.playerPos.y + 0.9, this.playerPos.z, 0xf43f5e, 22);
+    this.pushHudSnapshot();
+  }
+
+  private resetDynamicEntitiesOnRespawn(): void {
+    this.obstacleSimTime = 0;
+    for (const o of this.obstacles) {
+      o.curX = o.def.x;
+      o.curY = o.def.y;
+      o.curZ = o.def.z;
+      o.angle = o.def.phase ?? 0;
+      o.mesh.position.set(o.def.x, o.def.y, o.def.z);
+      o.mesh.rotation.set(0, o.angle, 0);
+    }
+
+    for (const p of this.platforms) {
+      p.curX = p.def.x;
+      p.curY = p.def.y;
+      p.curZ = p.def.z;
+      p.prevX = p.def.x;
+      p.prevY = p.def.y;
+      p.prevZ = p.def.z;
+      p.mesh.position.set(p.def.x, p.def.y, p.def.z);
+      p.mesh.scale.set(1, 1, 1);
+
+      if (p.def.kind === 'disappearing') {
+        p.disState = 'solid';
+        p.disTimer = 0;
+        p.mesh.visible = true;
+      }
+
+      if (p.def.kind === 'gate_bridge') {
+        p.bridgeState = 'ready';
+        p.bridgeTimer = 0;
+        p.warnBeep2s = false;
+        p.warnBeep1s = false;
+        p.gateActive = false;
+        p.mesh.visible = true;
+        const mat = p.mesh.material as THREE.MeshStandardMaterial;
+        mat.color.setHex(p.baseColorHex);
+        mat.emissive.setHex(p.baseEmissiveHex);
+        mat.emissiveIntensity = p.baseEmissiveInt;
+        mat.transparent = true;
+        mat.opacity = 0.34;
+      }
+    }
+
+    for (const sw of this.switches) {
+      sw.activated = false;
+      sw.cooldown = false;
+      const orbMat = sw.orbMesh.material as THREE.MeshStandardMaterial;
+      orbMat.color.setHex(0xef4444);
+      orbMat.emissive.setHex(0xef4444);
+    }
+  }
+
+  private completeEliminationRespawn(): void {
+    this.eliminated = false;
+    this.eliminationTimer = 0;
+    this.eliminationReason = null;
+    this.fellFromTimedBridge = false;
     this.playerPos.copy(this.spawnPos);
     this.playerVel.set(0, 0, 0);
     this.grounded = false;
+    this.groundedPlatform = null;
     this.jumpsRemaining = 2;
-    this.camShake = 0.22;
-    soundEngine.playFall();
+    this.coyoteTimer = 0.14;
+    if (this.playerRig) {
+      this.playerRig.root.rotation.set(0, this.playerYaw, 0);
+      this.playerRig.root.position.copy(this.playerPos);
+    }
+    this.resetDynamicEntitiesOnRespawn();
     this.showToast(
       this.activeCheckpointIndex > 0
         ? `Renascido no Checkpoint ${this.activeCheckpointIndex}`
         : 'Renascido no início da fase'
     );
+    this.pushHudSnapshot();
   }
 
   private updateContactShadow(): void {
@@ -1453,17 +1976,43 @@ export class ParkourEngine {
 
   private pushHudSnapshot(): void {
     if (!this.currentLevel) return;
-    const totalZ = Math.max(1, Math.abs(this.finishPos.z - this.currentLevel.startPos.z));
-    const curZ = Math.max(0, this.currentLevel.startPos.z - this.playerPos.z);
-    const progressPercent = Math.min(100, Math.max(0, Math.round((curZ / totalZ) * 100)));
+    let progressPercent = 0;
+    const wps = this.currentLevel.waypoints;
+    if (wps && wps.length > 1) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < wps.length; i++) {
+        const d = Math.hypot(this.playerPos.x - wps[i].x, this.playerPos.z - wps[i].z);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      progressPercent = Math.min(100, Math.max(0, Math.round((bestIdx / (wps.length - 1)) * 100)));
+    } else {
+      const totalZ = Math.max(1, Math.abs(this.finishPos.z - this.currentLevel.startPos.z));
+      const curZ = Math.max(0, this.currentLevel.startPos.z - this.playerPos.z);
+      progressPercent = Math.min(100, Math.max(0, Math.round((curZ / totalZ) * 100)));
+    }
 
     let nearbyPrompt: string | null = null;
     for (const sw of this.switches) {
-      if (!sw.activated) {
+      if (!sw.activated && !sw.cooldown) {
         const d = Math.hypot(this.playerPos.x - sw.x, this.playerPos.y - sw.y, this.playerPos.z - sw.z);
-        if (d <= 3.0) {
-          nearbyPrompt = `Pressione E para ${sw.label}`;
+        if (d <= 3.6) {
+          nearbyPrompt = `Pressione E para ${sw.label} (6s)`;
           break;
+        }
+      }
+    }
+
+    let activeBridgeTimer: number | null = null;
+    let activeBridgeMax = 6.0;
+    for (const p of this.platforms) {
+      if (p.def.kind === 'gate_bridge' && p.bridgeState === 'active') {
+        if (activeBridgeTimer === null || p.bridgeTimer < activeBridgeTimer) {
+          activeBridgeTimer = Math.max(0, p.bridgeTimer);
+          activeBridgeMax = p.bridgeDuration;
         }
       }
     }
@@ -1481,6 +2030,12 @@ export class ParkourEngine {
       nearbyPrompt,
       toastMessage: this.toastMessage,
       jumpsRemaining: this.jumpsRemaining,
+      isEliminated: this.eliminated,
+      eliminationTimer: Math.max(0, this.eliminationTimer),
+      eliminationReason: this.eliminationReason,
+      activeBridgeTimer,
+      activeBridgeMax,
+      activeBridgeWarning: activeBridgeTimer !== null && activeBridgeTimer <= 2.0,
     });
   }
 
@@ -1497,6 +2052,7 @@ export class ParkourEngine {
     dom.removeEventListener('pointerdown', this.onPointerDownBound);
     window.removeEventListener('pointermove', this.onPointerMoveBound);
     window.removeEventListener('pointerup', this.onPointerUpBound);
+    window.removeEventListener('pointercancel', this.onPointerUpBound);
     dom.removeEventListener('wheel', this.onWheelBound);
 
     this.clearLevel();

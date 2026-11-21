@@ -8,26 +8,13 @@ interface WorldSelectModalProps {
   saveData: SaveData;
   selectedWorldId: WorldId;
   onSelectWorld: (worldId: WorldId) => void;
-  onUnlockWorldWithCoins: (worldId: WorldId, cost: number) => void;
   onClose: () => void;
 }
-
-const WORLD_UNLOCK_COSTS: Record<WorldId, number> = {
-  urban: 0,
-  forest: 150,
-  volcanic: 260,
-  frozen: 380,
-  cyberpunk: 520,
-  desert: 680,
-  space: 850,
-  medieval: 1050,
-};
 
 export function WorldSelectModal({
   saveData,
   selectedWorldId,
   onSelectWorld,
-  onUnlockWorldWithCoins,
   onClose,
 }: WorldSelectModalProps) {
   return (
@@ -60,7 +47,6 @@ export function WorldSelectModal({
               (l) => saveData.levelRecords[l.id]?.completed
             ).length;
             const isSelected = w.id === selectedWorldId;
-            const unlockCost = WORLD_UNLOCK_COSTS[w.id];
 
             return (
               <div
@@ -120,21 +106,14 @@ export function WorldSelectModal({
                       Ver Fases
                     </button>
                   ) : (
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       <div className="text-[11px] text-amber-300/90 leading-tight">
                         {w.unlockRequirementText}
                       </div>
-                      <button
-                        disabled={saveData.coins < unlockCost}
-                        onClick={() => onUnlockWorldWithCoins(w.id, unlockCost)}
-                        className={`w-full py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                          saveData.coins >= unlockCost
-                            ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                            : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                        }`}
-                      >
-                        Desbloquear ({unlockCost} moedas)
-                      </button>
+                      <div className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-slate-800/90 border border-slate-700/70 text-slate-400 text-xs font-bold cursor-not-allowed">
+                        <Lock className="w-3.5 h-3.5" />
+                        Bloqueado
+                      </div>
                     </div>
                   )}
                 </div>
